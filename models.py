@@ -29,7 +29,7 @@ __all__=[
 class ConvLayer(nn.Module):
     """
     Template for layer-making
-    TODO: Figure out noise placement
+    TODO: Validate 100% the noise injection implementation
     """
     def __init__(
             self,
@@ -179,10 +179,12 @@ class Generator(nn.Module):
 class BaseMapping(nn.Module):
     def __init__(self,latent_dims:int=16)->None:
         super().__init__()
-        self.model=nn.Sequential(*(
-            [nn.Linear(latent_dims,512),nn.ReLU()]+
-            [nn.Linear(512,512),nn.ReLU()]*3
-        ))
+        self.model=nn.Sequential(
+            nn.Linear(latent_dims,512),nn.ReLU(),
+            nn.Linear(512,512),nn.ReLU(),
+            nn.Linear(512,512),nn.ReLU(),
+            nn.Linear(512,512),nn.ReLU(),
+        )
 
     def forward(self,x:torch.Tensor)->torch.Tensor:
         return self.model(x)
@@ -192,10 +194,12 @@ class StyleMapping(nn.Module):
     ## KEPT AS PARAMETER CAUSE 
     def __init__(self,num_domains:int,style_dims:int=64)->None:
         super().__init__()
-        self.model=nn.Sequential(*(
-            [nn.Linear(512,512),nn.ReLU()]*3+
-            [nn.Linear(512,style_dims*num_domains)]
-        ))
+        self.model=nn.Sequential(
+            nn.Linear(512,512),nn.ReLU(),
+            nn.Linear(512,512),nn.ReLU(),
+            nn.Linear(512,512),nn.ReLU(),
+            nn.Linear(512,style_dims*num_domains),
+        )
 
     def forward(self,x:torch.Tensor)->torch.Tensor:
         x=self.model(x)
@@ -232,7 +236,7 @@ class ImageEncoderLite(nn.Module):
             ConvLayer(PreActResBlk(256,512),nn.AvgPool2d(2)),
             ConvLayer(PreActResBlk(512,512),nn.AvgPool2d(2)),
         )
-        
+
     def forward(self,x:torch.Tensor)->torch.Tensor:
         return self.encoder(x)
 
@@ -253,12 +257,15 @@ class StyleDecoder(nn.Module):
             nn.LeakyReLU(),
         )
         self.classifier=nn.Linear(512,num_dims*num_domains)
-    
+
     def forward(self,x:torch.Tensor)->torch.Tensor:
         x=self.decoder(x)
         x=x.reshape((512,))
         x=self.classifier(x)
         return x
+
+    def expand(self)->tuple[nn.Module,nn.Module]:
+        return self.decoder, self.classifier
 
 
 class DefectDecoder(nn.Module):
@@ -268,8 +275,46 @@ class DefectDecoder(nn.Module):
             nn.LeakyReLU(),
             nn.Conv2d(512,feature_alloc*num_domains,kernel_size=1),
         )
-    
+
     def forward(self,x:torch.Tensor)->torch.Tensor:
         x=self.decoder(x)
+        return x
+
+
+class BGClassifier(nn.Module):
+    ## TODO: Refine
+    def __init__(self,num_classes:int)->None:
+        self.classifier=nn.Linear(512,num_classes)
+
+    def forward(self,x:torch.Tensor)->torch.Tensor:
+        return self.classifier(x)
+
+
+class FGClassifier(nn.Module):
+    """
+    TODO: Refine.
+
+    According to the paper, the classifier employs 4 residual layers
+    un this part, but they don't specify which kind (resampler, norm?).
+
+    We assume no norm has been used, but it's just too convenient that
+    the input shape is (feature_alloc*num_domains)x16x16, as with an
+    AvgPool2d per layer we get (feature_alloc*num_domains)x1x1, just
+    perfect for a linear classifier.
+    """
+    def __init__(self,num_domains:int,feature_alloc:int=64) -> None:
+        super().__init__()
+        self.decoder=nn.Sequential(
+            ConvLayer(PreActResBlk(feature_alloc*num_domains),nn.AvgPool2d(2)),
+            ConvLayer(PreActResBlk(feature_alloc*num_domains),nn.AvgPool2d(2)),
+            ConvLayer(PreActResBlk(feature_alloc*num_domains),nn.AvgPool2d(2)),
+            ConvLayer(PreActResBlk(feature_alloc*num_domains),nn.AvgPool2d(2)),
+        )
+        self.classifier=nn.Linear(feature_alloc*num_domains,num_domains)
+
+    def forward(self,x:torch.Tensor)->torch.Tensor:
+        x=self.decoder(x)
+        x=x.flatten()
+        x=self.classifier(x)
         return x
 
